@@ -372,12 +372,12 @@ daemon 是消息状态的唯一写入入口。每次状态变化和对应的账�
 consign/
 ├── Cargo.toml
 ├── crates/
-│   ├── ap-core/     # 领域模型、组织动作与 Decision 协议、状态机（无 IO）
-│   ├── ap-store/    # SQLite、迁移、事件投影
-│   ├── ap-policy/   # Decision API（Tier 0/1/2）
-│   ├── ap-driver/   # Codex app-server、agy headless、HTTP、Exec 驱动；进程组；worktree；transcript 同步
-│   ├── ap-daemon/   # axum（人类接口与机器接口分离）、调度、Actor 循环、Watcher、节点管理、恢复
-│   └── ap-cli/      # consign up / daemon / worker / open / send / hook / status
+│   ├── consign-core/     # 领域模型、组织动作与 Decision 协议、状态机（无 IO）
+│   ├── consign-store/    # SQLite、迁移、事件投影
+│   ├── consign-policy/   # Decision API（Tier 0/1/2）
+│   ├── consign-driver/   # Codex app-server、agy headless、HTTP、Exec 驱动；进程组；worktree；transcript 同步
+│   ├── consign-daemon/   # axum（人类接口与机器接口分离）、调度、Actor 循环、Watcher、节点管理、恢复
+│   └── consign-cli/      # consign up / daemon / worker / open / send / hook / status
 ```
 
 ### 7.4 数据模型
