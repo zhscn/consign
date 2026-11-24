@@ -4,7 +4,15 @@
 
 Consign 把 Agent 之间的交接变成可恢复的组织流程。一次审查可以由单个 Agent 在上下文里依次完成分析、修复和复核，但会话历史很难回答每一步由谁接手、依据哪个决定、验证了哪个快照。Consign 把这些信息写入工单账本，让操作者可以换会话继续工作，也能从多次实际交接中识别值得固定的步骤。
 
-Actor 表示组织中的持久角色，原生 Harness 会话负责执行。固定流程可以声明何时提出下一封信、交给哪个角色、需要什么证据，以及由谁确认。人工交接和流程生成的交接共用邮箱、准入和入账机制。
+Consign 用三个概念区分组织状态、工作责任和具体执行。
+
+| 概念 | 实现形态 | 职责 |
+| --- | --- | --- |
+| **Consign** | Rust daemon 和 SQLite | 持有工单、邮箱、账本和授权。按规则路由交接，处理审批和恢复。 |
+| **Actor** | 持久身份和按来信启动的模型循环 | 读取职责、相关工作记录和本次任务，判断自己处理、委派执行还是请人介入。一次激活称为 Actor Run。 |
+| **Harness** | OpenCode、Codex、agy 等执行环境 | 接受具体委派，在自己的会话中执行。Consign 通过 Harness Driver 启动、续接和核对结果。 |
+
+Actor 可以共用 DeepSeek 作为书记员模型。各自的职责、权限和相关历史决定它们如何处理来信。流程稳定后，Consign 可按规则提出后续交接。模型、规则和操作者共用组织动作接口，账本记录各动作的来源和结果。
 
 第一阶段交付单机控制面和 Harness 接入。一个本地 daemon 持有 SQLite，操作者和驱动通过接口写入。真实模型调用使用 API key，故障恢复使用可控的测试驱动验证。
 
@@ -15,7 +23,7 @@ Actor 表示组织中的持久角色，原生 Harness 会话负责执行。固�
 | 前提 | 推出的要求 |
 | --- | --- |
 | **模型的偏差是系统性的，且因模型而异。** GPT 擅长执行，但做方案容易过度设计、偏离项目风格；Gemini 文字好、能接受取舍，但容易发散和幻觉；DeepSeek 便宜，但 token 效率低 | 质量来自异构交叉检查和人对取舍的校准。系统要能把同一件事交给不同模型，并保证检查者不是作者 |
-| **模型调用和工具执行由 Harness 负责。** | 驱动记录执行身份、会话和轮次，工单及交接记录独立于任何会话 |
+| **组织责任需要跨执行会话延续。** | Actor 从账本恢复工作进度，Harness Driver 记录局部会话和轮次 |
 | **上下文是易失的，工作是持久的。** 调查、发布、审查往往跨越多天和多个会话 | 身份、归属、决定、证据、等待都存放在上下文之外，交接时按需注入 |
 | **人的注意力是唯一不可扩展的资源** | 优化目标是用户的注意力。用户只处理决定、确认和例外，其余过程进入账本 |
 | **模型会变强，但跨步骤的不变量不会自动成立。** 「检查者不是作者」「外部副作用需要授权」「消息不丢失」「同一会话不被两方同时写入」都无法由单个模型保证 | 模型决定做什么；框架负责寻址、记录、授权和恢复。框架也不能假设模型会遵守框架的规则 |
@@ -28,11 +36,11 @@ Actor 表示组织中的持久角色，原生 Harness 会话负责执行。固�
 
 | 原语 | 职责 | 状态归属 |
 | --- | --- | --- |
-| **Actor** | `@handle`、职责档案、绑定（节点、Harness、凭据类型、模型、沙箱）、会话亲和策略、触发策略（`manual` / `auto`） | 只持有收件箱与会话映射，不存业务状态 |
+| **Actor** | `@handle`、职责档案、委派偏好、触发策略（`manual` / `auto`） | `actors` / `actor_runs`；工作记录按 Actor 从账本查询 |
 | **Mailbox** | 成员间唯一的协作通道：持久队列、幂等去重、单会话串行、超时升级 | `messages` |
 | **Ticket & Ledger** | 工单（可锚定 GitHub issue、PR、分支）、只追加的事件账本、结构化的决定、绑定快照的证据 | `tickets` / `events` / `decisions` / `evidence` |
 | **Decision API** | 统一的策略决策点：邮箱准入、副作用审批、资源锁校验、命令审批 | 规则配置、`approvals` / `policy_audit` |
-| **Session Driver** | 屏蔽各 Harness 的差异：进程管理、流式事件、结构化输出、会话血缘、下钻支持 | `sessions` / `turns` |
+| **Harness Driver** | 屏蔽各 Harness 的差异：进程管理、流式事件、结果采集、会话血缘、下钻支持 | `sessions` / `turns` |
 
 ### 3.2 模型与框架的分工
 
@@ -41,7 +49,7 @@ Actor 表示组织中的持久角色，原生 Harness 会话负责执行。固�
 | 出错的代价 | 错了看得见、改得掉：先验证哪个假设、方案怎么写 | 不可逆或不易察觉：消息丢失、对外评论或推送、在忙碌的机器上跑 benchmark |
 | 作用范围 | 单个步骤内部 | 跨步骤才成立的性质：独立复核、有效决定、单写入方 |
 | 生命周期 | 一次上下文内结束 | 必须长于上下文：身份、归属、等待 |
-| 可验证性 | 需要判断力 | 能用确定性方法检查：产物是否存在、测试是否通过、输出是否符合 schema |
+| 可验证性 | 需要判断力 | 检查组织动作的参数、权限和产物引用 |
 
 探索性工作由操作者逐步确认转交。步骤稳定后，流程规则可以根据已入账的结果提出下一封信，每一封信仍按同一套协议准入和执行。
 
@@ -77,7 +85,7 @@ stateDiagram-v2
   Held --> Rejected: 用户驳回
   Held --> Queued: 用户确认
   Queued --> InProgress: 通过执行准入
-  InProgress --> Replied: 轮次结果入账
+  InProgress --> Replied: Actor 回复入账
   Replied --> [*]
   Rejected --> [*]
 ```
@@ -104,21 +112,11 @@ stateDiagram-v2
 - 信件包含外部副作用；
 - 单张工单连续多跳没有用户介入（跳数熔断，在 `Proposed` 阶段检查）。
 
-成员在输出中建议的转交，如果目标是 `manual` 的 Actor，就以 `Held` 状态出现在用户收件箱里。
+Actor Run 领取一封信后读取职责、相关账本事件和准入时固定的上下文。它可以先登记一项委派并等待结果。重启后，Consign 根据已登记的委派继续等待或处理结果。Actor 在收到执行结果后可以登记证据、请求人工判断或提出后续交接。
 
-所有 Actor 的结构化输出统一为 `TurnOutput`：
+组织动作由工具调用提交。读取上下文、委派执行、登记证据和提出转交是独立操作。每个工具校验自己的参数。回复正文可以使用自然语言，支持结构化输出的 Harness 也可用其结果辅助整理。
 
-```json
-{
-  "reply": { "summary": "string", "artifact_paths": ["string"] },
-  "send": [{ "to": "@review", "kind": "request", "ask": "string", "refs": ["commit:...", "file:..."] }],
-  "propose": [{ "action": "github_comment", "params": {}, "rationale": "string" }],
-  "evidence": [{ "kind": "finding|repro|benchmark", "summary": "string", "refs": ["string"] }],
-  "need_human": { "reason": "string", "question": "string" }
-}
-```
-
-结构化输出由 Harness 的 schema 约束机制保证：Codex 用 `outputSchema`，agy 用 `--json-schema`。模型输出的 `artifact_paths` 和 `refs` 只是路径或 commit；入账时由系统计算内容哈希、必要时生成 git 快照，转换为不可变的产物引用（见 4.9）。
+驱动在当前执行尝试内注入可用工具。短期凭据绑定尝试、调用主体和允许的操作，由驱动代为持有。服务端据此解析工单和权限，尝试结束后撤销授权。需要操作者确认的提议进入 `Held`。
 
 ### 4.3 Decision API
 
@@ -180,7 +178,7 @@ stateDiagram-v2
 
 切换到原生会话操作时，调度器先暂停该会话的自动投递，等待当前轮次结束，再将会话交给操作者。归还时，驱动根据已持久化的历史补录操作。无法确认会话状态时，交由操作者核对。
 
-**agy 下钻后的同步**：租约释放时，系统读取 agy `transcript.jsonl` 的增量，把用户在 TUI 中的输入和模型回复写入账本。也可以再发一轮结构化收尾，让会话输出 `TurnOutput`。
+**agy 下钻后的同步**：租约释放时，系统读取 agy `transcript.jsonl` 的增量，把用户在 TUI 中的输入和模型回复写入账本。
 
 ### 4.7 契约一：信封的执行准入
 
@@ -211,31 +209,28 @@ stateDiagram-v2
 - 本轮产出按照执行准入时记录的版本入账；输出关口则按**当前**决定检查 diff（见 4.4）。
 - 对于非收窄型的变化，记录变化供操作者判断是否中断当前轮次。
 
-在同一笔 SQLite 事务中读取适用的决定集、检查请求并记录轮次准入。事务提交时为该轮固定决定版本。需要授权的外部动作在执行前按当前策略复核。
+在同一笔 SQLite 事务中读取适用的决定集、检查请求并记录轮次准入。事务提交时为该次 Actor Run 固定决定版本。需要授权的外部动作在执行前按当前策略复核。
 
-### 4.8 契约二：轮次结果的原子入账
+### 4.8 契约二：组织动作与执行结果入账
 
-一次轮次完成可能产生多个持久化效果：回复、后续转交、外部动作提议、证据、人工请求。如果系统在写完回复、还没创建下一封信时崩溃，恢复时既不能重新调用模型，也不能丢掉后续转交。
-
-**轮次的两个事务**：
+组织动作可以在执行期间发生。一次工具调用的处理结果、产生的状态变更和对应事件在同一笔 SQLite 事务中写入。调用用执行尝试 ID 和调用 ID 去重。重复提交相同参数返回之前的结果，同一调用 ID 携带不同参数时拒绝。委派工具登记待执行的工作，驱动在事务提交后启动 Harness。后续转交和外部动作先登记为提议，再按各自的准入和审批条件处理。
 
 | 时机 | 同一个 SQLite 事务内的操作 |
 | --- | --- |
-| 轮次开始 | 当前信件 `Queued → InProgress`；写入 `turns` 启动意图、原生会话 id 和解析出的上下文；提交后调用 Harness，取得原生轮次 id 后立即补写 |
-| 轮次完成 | 保存原始 `TurnOutput`；写入账本事件；登记证据；创建后续信件（`Proposed`）；为外部动作提议创建审批单；当前信件 `InProgress → Replied` |
+| 领取信件 | 信件从 `Queued` 转为 `InProgress`，创建 Actor Run 并记录准入上下文。该次运行的标识同时用于 Actor 工具调用去重。 |
+| 启动委派 | 为已登记的委派创建执行尝试。事务提交后调用 Harness，取得原生轮次 ID 后补写。 |
+| 委派完成 | 保存原生结果和完成事件，更新委派状态，唤醒等待该结果的 Actor Run。 |
+| Actor 完成回复 | 保存回复和完成事件，信件从 `InProgress` 转为 `Replied`。 |
 
-**规则**：
-- 入账前先校验 `TurnOutput`：schema、引用能否解析、Tier 0 预检。校验失败时，保存原始输出，信件进入 `Escalated`，不产生任何后续效果。
-- 轮次完成事务只接受尚未入账的轮次。后续信件的 `idempotency_key` 由 `turn_id` 加上它在 `send` 数组中的下标确定。重复入账时不会产生重复的信。
-- **外部副作用不在事务内执行**。事务只创建审批单；批准后由 `ExecDriver` 单独执行，并携带自己的幂等键。执行结果不确定时，进入 `NeedsConfirmation`。
+完成上报关联具体尝试并检查它仍是当前尝试。重复上报返回已登记的结果。外部动作经批准后由执行器另行执行，结果不确定时交给操作者核对。
 
-**崩溃恢复**：对于 `InProgress` 但没有完成记录的轮次，按原生轮次 id 查询。启动请求已发出但 id 尚未保存时，先尝试从原生历史可靠关联；无法判断请求是否被接受时，进入 `NeedsConfirmation`。
+**崩溃恢复**：对于已启动但没有完成记录的 Harness 轮次，按原生轮次 id 查询。启动请求已发出但 id 尚未保存时，先尝试从原生历史可靠关联；无法判断请求是否被接受时，进入 `NeedsConfirmation`。
 
 | 原生会话中的状态 | 处理 |
 | --- | --- |
-| 已完成 | 取回最终输出，执行「轮次完成」事务 |
+| 已完成 | 取回最终输出，执行「委派完成」事务 |
 | 仍在运行 | 重新接入事件流，继续等待 |
-| 确认未执行 | 回到 `Queued` |
+| 确认未执行 | 将该委派重新排队 |
 | 无法确定 | 进入 `NeedsConfirmation`，由操作者核对后决定是否重试 |
 
 结果从哪里取回：Codex 用驱动版本支持的线程历史接口读取对应轮次；agy 读 `transcript_full.jsonl`。因此受管会话**不使用临时线程**：Codex 的 `ephemeral` 线程无法读取历史轮次（见附录 A.1）。
@@ -334,6 +329,8 @@ flowchart TB
     MAPI["机器接口：/v1/decide、Worker 上报"]
     PDP["Decision API"]
     SCH["邮箱路由与调度"]
+    ACT["Actor 模型循环"]
+    OPS["组织动作"]
     WT["Watcher（gh / 定时）"]
     DB["SQLite（WAL）"]
   end
@@ -349,6 +346,10 @@ flowchart TB
   MAPI --> PDP
   WT --> SCH
   SCH <--> PDP
+  SCH --> ACT
+  ACT --> OPS
+  OPS --> PDP
+  OPS --> DB
   SCH <--> DB
   PDP <--> DB
   N1 <-->|拉取轮次 / 上报事件| MAPI
@@ -357,7 +358,7 @@ flowchart TB
 
 **部署形态**：
 - **单机**：`consign up` 在一个进程中运行控制平面和本地执行节点。
-- **多机**：控制平面可以运行在常驻的低配服务器上，只负责 SQLite、队列、Watcher和 Decision API；Linux PC 和两台 Mac 各自运行 `consign worker`，上报自身能力（Harness、操作系统、资源、仓库）。
+- **多机**：控制平面可以运行在常驻的低配服务器上，只负责 SQLite、队列、Watcher 和 Decision API；Linux PC 和两台 Mac 各自运行 `consign worker`，上报自身能力（Harness、操作系统、资源、仓库）。
 
 daemon 是消息状态的唯一写入入口。每次状态变化和对应的账本事件在同一事务写入。收件箱按消息和待处理事项查询；客户端可通过 SSE 获知变更，断线后重新查询。多机部署继续由控制面持有数据库。
 
@@ -371,12 +372,12 @@ daemon 是消息状态的唯一写入入口。每次状态变化和对应的账�
 consign/
 ├── Cargo.toml
 ├── crates/
-│   ├── ap-core/     # 领域模型、TurnOutput 与 Decision 协议、状态机（无 IO）
+│   ├── ap-core/     # 领域模型、组织动作与 Decision 协议、状态机（无 IO）
 │   ├── ap-store/    # SQLite、迁移、事件投影
 │   ├── ap-policy/   # Decision API（Tier 0/1/2）
 │   ├── ap-driver/   # Codex app-server、agy headless、HTTP、Exec 驱动；进程组；worktree；transcript 同步
-│   ├── ap-daemon/   # axum（人类接口与机器接口分离）、调度、Watcher、节点管理、恢复
-    └── ap-cli/      # consign up / daemon / worker / open / send / hook / status
+│   ├── ap-daemon/   # axum（人类接口与机器接口分离）、调度、Actor 循环、Watcher、节点管理、恢复
+│   └── ap-cli/      # consign up / daemon / worker / open / send / hook / status
 ```
 
 ### 7.4 数据模型
@@ -385,11 +386,14 @@ consign/
 | --- | --- | --- |
 | `events` | `seq, ts, kind, ticket_id, actor, node_id, payload_json` | 只追加，是所有视图的事实来源 |
 | `nodes` | `id, name, capabilities_json, status, last_heartbeat_at` | |
-| `actors` | `handle, profile, harness, credential_kind, trigger, node_selector, model, sandbox, session_policy, config_json` | `credential_kind`：`subscription` / `api_key` / `none`；`trigger`：`manual` / `auto` |
+| `actors` | `handle, profile, trigger, delegation_preferences_json` | 持久身份和委派偏好。 |
+| `actor_runs` | `id, actor, message_id, status, resolved_context_json, decision_version` | 一次收信处理，可等待多个委派结果。 |
+| `delegations` | `id, actor_run_id, harness, request_json, status, current_turn_id` | Actor 提出的具体执行任务。 |
+| `tool_calls` | `attempt_id, call_id, tool, args_hash, result_json` | 按尝试和调用 ID 唯一。尝试标识区分 Actor Run 和 Harness 轮次，保存组织动作的处理结果。 |
 | `tickets` | `id, anchor, repo, goal, status, decision_version, hop_count, hop_limit, created_at` | `decision_version` 是决定集版本（见 4.7） |
-| `messages` | `id, ticket_id, thread_id, origin, from_actor, to_actor, kind, state, idempotency_key, request_json, confirmed_decision_version, reply_to, attempts, timeout_at` | `origin` 由服务端写入：`human` / `actor` / `watcher`；`request_json` 是信封中经用户确认的请求部分 |
+| `messages` | `id, ticket_id, thread_id, origin, from_actor, to_actor, kind, state, idempotency_key, request_json, confirmed_decision_version, reply_to, attempts, timeout_at` | `origin` 由服务端写入：`human` / `actor` / `watcher` / `rule`；`request_json` 是信封中经用户确认的请求部分 |
 | `sessions` | `id, node_id, harness, native_id, parent_session_id, actor, ticket_id, worktree_id, lease_owner, lease_until, transcript_cursor` | |
-| `turns` | `id, session_id, message_id, native_turn_id, driver, cli_version, resolved_context_json, decision_version, started_at, ended_at, status, raw_output, exit_detail, usage_json, rate_limit_json` | 每一轮执行的记录：`resolved_context_json` 是执行准入时解析出的上下文；`raw_output` 是原始输出；也用于额度统计 |
+| `turns` | `id, session_id, delegation_id, native_turn_id, driver, cli_version, resolved_context_json, decision_version, started_at, ended_at, status, raw_output, exit_detail, usage_json, rate_limit_json` | 每一轮执行的记录：`resolved_context_json` 是执行准入时解析出的上下文；`raw_output` 是原始输出；也用于额度统计 |
 | `artifacts` | `id, kind, node_id, repo, path, version, size, git_ref, created_at` | 不可变的产物引用（见 4.9） |
 | `worktrees` | `id, node_id, repo, path, base_rev, created_at, create_ms, size_bytes, removed_at` | 同时记录工作区生命周期数据，为评估存储层积累轨迹 |
 | `decisions` | `id, scope, scope_id, body, effect, status, supersedes_id, source_msg_id, created_at` | `effect`：`narrowing` / `other`，默认 `other` |
@@ -405,7 +409,7 @@ consign/
 ### 8.1 变更审查
 
 1. 用户通过操作者接口对 `HEAD~3..HEAD` 发起审查。系统建立工单和临时只读 worktree，生成信封。
-2. 用户确认信封。`@review`（异构模型，只读沙箱）产出绑定 `git_rev` / `diff_hash` 的发现。
+2. 用户确认信封。`@review` 读取相关历史，委派只读 Harness 审查固定快照，再登记绑定 `git_rev` / `diff_hash` 的发现。
 3. 用户勾选要修的条目和提交边界，形成决定。
 4. 策略把修复改写为：从审查会话 fork 出新会话，先重新梳理方案；用户确认后再实现。
 5. 实现产出的 diff 经过输出关口，对照有效决定检查。
@@ -425,8 +429,8 @@ consign/
 
 | 阶段 | 交付物 | 验收 |
 | --- | --- | --- |
-| **Phase 1：本地控制面与 Harness** | Rust workspace、本地 daemon、SQLite 邮箱与账本、操作者和驱动接口、信封确认、可控测试驱动、使用 API key 的 Codex app-server 驱动、轮次恢复、本地 Git 快照及 blob 引用 | 通过接口完成只读审查和一次后续转交。对启动结果未知、原生轮次已完成但尚未入账、重复上报三种情况分别验证恢复行为 |
-| **Phase 2：决定与策略** | 决定集版本、执行准入、证据时效、审批与输出关口、agy 驱动验证 | 排队期间变更授权后，旧信封按准入结果处理；用同一个工单在两种 Harness 之间交接 |
+| **Phase 1：本地控制面与 Harness** | Rust workspace、本地 daemon、SQLite 邮箱与账本、组织动作接口、信封确认、可控测试驱动、一个 API key Harness 驱动、轮次恢复、本地 Git 快照及 blob 引用 | 由可控驱动或操作者通过组织动作接口完成只读审查和一次后续转交。对启动结果未知、原生轮次已完成但尚未入账、重复上报三种情况分别验证恢复行为 |
+| **Phase 2：Actor 与策略** | DeepSeek Actor 循环、按尝试注入工具、决定集版本、执行准入、证据时效、审批与输出关口、agy 驱动验证 | 排队期间变更授权后，旧信封按准入结果处理；Actor 在重启后接回已有委派的结果，并在同一工单中完成后续交接 |
 | **Phase 3：固定流程与资源** | 由既有交接轨迹提炼的流程模板、Watcher、资源锁、外部动作审批 | 按固定审查流程提出后续交接，异常进入同一个人工待办队列 |
 | **Phase 4：多机** | 远程 Worker、跨节点产物物化、会话定位和接管 | 在不同节点执行同一工单的交接，授权记录及产物来源可追溯 |
 
@@ -438,7 +442,7 @@ consign/
 | --- | --- |
 | agy 接入能力和运行形态有差异 | 使用 API key 验证所选传输的审批、输出与恢复能力 |
 | Harness 接口变化 | 驱动层保持很薄；每一轮记录 CLI 版本；app-server 不可用时回退到 `codex exec` |
-| agent 冒充用户 | 见第 5 节：接口分离、凭据不落盘、服务端写入 `origin`、沙箱禁网 |
+| agent 冒充用户 | 见第 5 节：接口分离、短期工具授权、服务端写入 `origin`、沙箱禁网 |
 | 命令匹配被绕过 | 沙箱是硬边界，Decision API 是第二道防线，自然语言决定在输出关口检查 |
 | 订阅额度耗尽 | 记录 Harness 上报的额度和用量 |
 | 下钻造成账本断档 | 接管期间暂停投递，归还后同步持久历史 |
