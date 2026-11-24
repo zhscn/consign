@@ -69,6 +69,7 @@ Actor 可以共用 DeepSeek 作为书记员模型。各自的职责、权限和�
 其他规则：
 
 - 操作者可在确认前编辑信封。首阶段由操作者确认每次转交，后续可为特定 Actor 配置自动投递策略。
+- 编辑和驳回作为事件入账，保留提议的原稿和操作者的改动，驳回可以附一句理由（见 4.6）。
 - 信封作为普通用户消息发送，不改写 Harness 的系统提示词和工具定义。
 - 信封只携带引用（见 4.9），不复制大段正文。
 
@@ -90,7 +91,7 @@ stateDiagram-v2
   Rejected --> [*]
 ```
 
-用户可以在确认前编辑信封。策略放行时也可以按规则改写信封。
+用户可以在确认前编辑信封。策略放行时也可以按规则改写信封。两种修改都在事件中保留修改前的内容。
 
 #### 等待与恢复
 
@@ -178,7 +179,16 @@ Actor Run 领取一封信后读取职责、相关账本事件和准入时固定�
 
 切换到原生会话操作时，调度器先暂停该会话的自动投递，等待当前轮次结束，再将会话交给操作者。归还时，驱动根据已持久化的历史补录操作。无法确认会话状态时，交由操作者核对。
 
+**Codex 下钻后的同步**：TUI 通过 `--remote` 连接同一个 app-server，驱动收到操作者发起的轮次后实时入账（见附录 A.1）。实时入账和归还时的历史补录均按 `(session_id, native_turn_id)` 写入同一条轮次记录。已有记录补齐缺失内容，对应的轮次事件只追加一次。
+
 **agy 下钻后的同步**：租约释放时，系统读取 agy `transcript.jsonl` 的增量，把用户在 TUI 中的输入和模型回复写入账本。
+
+**介入记录**：操作者介入的地方，往往是 Agent 对问题的理解和操作者分开的地方：改写一封信封，驳回一项提议，或者在原生会话里对已经给出的结论继续追问。账本把介入和它所针对的内容放在一起记录：
+
+- 信封或 Actor 提议被编辑、驳回时，事件中保存原稿、改动和可选的驳回理由。
+- 操作者下钻期间发起的轮次标记为 `origin = human`，输入原文保存到 `turns.raw_input`。有明确依据时，用 `responds_to_turn_id` 关联被回应的轮次；新要求或回应对象不明时留空。
+
+回看工单时，可以对照 Agent 原本打算怎么做、操作者改成了什么。比较模型、调整流程或判断某个步骤能否固定下来时，也能从同一份记录中找出哪些工作反复需要人纠正。
 
 ### 4.7 契约一：信封的执行准入
 
@@ -384,7 +394,7 @@ consign/
 
 | 表 | 字段 | 说明 |
 | --- | --- | --- |
-| `events` | `seq, ts, kind, ticket_id, actor, node_id, payload_json` | 只追加，是所有视图的事实来源 |
+| `events` | `seq, ts, kind, ticket_id, actor, node_id, payload_json` | 只追加，是所有视图的事实来源。编辑、驳回和策略改写类事件保留修改前的内容 |
 | `nodes` | `id, name, capabilities_json, status, last_heartbeat_at` | |
 | `actors` | `handle, profile, trigger, delegation_preferences_json` | 持久身份和委派偏好。 |
 | `actor_runs` | `id, actor, message_id, status, resolved_context_json, decision_version` | 一次收信处理，可等待多个委派结果。 |
@@ -393,7 +403,7 @@ consign/
 | `tickets` | `id, anchor, repo, goal, status, decision_version, hop_count, hop_limit, created_at` | `decision_version` 是决定集版本（见 4.7） |
 | `messages` | `id, ticket_id, thread_id, origin, from_actor, to_actor, kind, state, idempotency_key, request_json, confirmed_decision_version, reply_to, attempts, timeout_at` | `origin` 由服务端写入：`human` / `actor` / `watcher` / `rule`；`request_json` 是信封中经用户确认的请求部分 |
 | `sessions` | `id, node_id, harness, native_id, parent_session_id, actor, ticket_id, worktree_id, lease_owner, lease_until, transcript_cursor` | |
-| `turns` | `id, session_id, delegation_id, native_turn_id, driver, cli_version, resolved_context_json, decision_version, started_at, ended_at, status, raw_output, exit_detail, usage_json, rate_limit_json` | 每一轮执行的记录：`resolved_context_json` 是执行准入时解析出的上下文；`raw_output` 是原始输出；也用于额度统计 |
+| `turns` | `id, session_id, delegation_id, origin, responds_to_turn_id, native_turn_id, driver, cli_version, resolved_context_json, decision_version, started_at, ended_at, status, raw_input, raw_output, exit_detail, usage_json, rate_limit_json` | 每一轮执行的记录：`origin` 区分驱动发起（`driver`）和操作者下钻时发起（`human`）；`responds_to_turn_id` 可为空，有明确依据时指向被回应的轮次；`raw_input` 保存人工输入原文；已知原生轮次 ID 时，`(session_id, native_turn_id)` 唯一；`resolved_context_json` 是执行准入时解析出的上下文；`raw_output` 是原始输出；也用于额度统计 |
 | `artifacts` | `id, kind, node_id, repo, path, version, size, git_ref, created_at` | 不可变的产物引用（见 4.9） |
 | `worktrees` | `id, node_id, repo, path, base_rev, created_at, create_ms, size_bytes, removed_at` | 同时记录工作区生命周期数据，为评估存储层积累轨迹 |
 | `decisions` | `id, scope, scope_id, body, effect, status, supersedes_id, source_msg_id, created_at` | `effect`：`narrowing` / `other`，默认 `other` |
