@@ -66,29 +66,38 @@ Actor 表示组织中的持久角色，原生 Harness 会话负责执行。固�
 
 ### 4.2 邮箱与状态机
 
+#### 准入与执行
+
 ```mermaid
 stateDiagram-v2
-  [*] --> Proposed: 用户 / Actor / Watcher 提交
+  [*] --> Proposed: 用户、Actor 或 Watcher 提交
+  Proposed --> Held: 需要确认
   Proposed --> Rejected: 策略拒绝
-  Proposed --> Held: 需要用户确认
-  Held --> Queued: 用户确认（可编辑信封）
+  Proposed --> Queued: 策略放行
   Held --> Rejected: 用户驳回
-  Proposed --> Queued: 策略放行（可含改写）
-  Queued --> WaitingResource: 缺资源锁或会话被占用
-  WaitingResource --> Queued: 释放
-  Queued --> Held: 执行准入时决定集或引用失效（见 4.7）
-  Queued --> InProgress: 通过执行准入，Worker 取信执行
-  InProgress --> Replied: 轮次完成且效果入账
-  InProgress --> Queued: 中断且可幂等重试
-  InProgress --> NeedsConfirmation: 中断且含不确定副作用
-  Queued --> Escalated: 超时
-  InProgress --> Escalated: 超时 / 重试耗尽
-  NeedsConfirmation --> Queued: 用户确认重试
-  NeedsConfirmation --> Escalated: 无法恢复结果
-  Escalated --> Queued: 用户改派或重试
+  Held --> Queued: 用户确认
+  Queued --> InProgress: 通过执行准入
+  InProgress --> Replied: 轮次结果入账
   Replied --> [*]
   Rejected --> [*]
 ```
+
+用户可以在确认前编辑信封。策略放行时也可以按规则改写信封。
+
+#### 等待与恢复
+
+| 当前状态 | 条件 | 下一状态 |
+| --- | --- | --- |
+| `Queued` | 资源锁不可用或会话被占用 | `WaitingResource` |
+| `WaitingResource` | 资源或会话释放 | `Queued` |
+| `Queued` | 执行准入要求重新确认决定集或引用（见 4.7） | `Held` |
+| `Queued` | 排队超时 | `Escalated` |
+| `InProgress` | 中断且可幂等重试 | `Queued` |
+| `InProgress` | 中断且含不确定副作用 | `NeedsConfirmation` |
+| `InProgress` | 超时或重试耗尽 | `Escalated` |
+| `NeedsConfirmation` | 用户确认重试 | `Queued` |
+| `NeedsConfirmation` | 无法恢复结果 | `Escalated` |
+| `Escalated` | 用户改派或重试 | `Queued` |
 
 进入 `Held` 的情况有三种：
 - 目标 Actor 的触发策略为 `manual`；
