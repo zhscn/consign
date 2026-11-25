@@ -1,6 +1,6 @@
 # Consign 实现规格
 
-本文给出 Consign 的数据结构、协议、状态机和各 Harness 的接入细节。设计的出发点、责任划分和抽象层次见 [DESIGN.md](DESIGN.md)，本文不再重复其中的理由。
+本文给出 Consign 的数据结构、协议、状态机和各 Harness 的接入细节。设计的出发点、责任划分和抽象层次见 [DESIGN.md](DESIGN.md)，人机交互的立场和界面契约见 [INTERACTION.md](INTERACTION.md)，本文不再重复其中的理由。
 
 ## 1. 范围与形态
 
